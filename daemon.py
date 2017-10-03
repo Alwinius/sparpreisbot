@@ -10,6 +10,7 @@ from db import Connection
 from db import User
 from datetime import date
 from datetime import datetime
+from datetime import timedelta
 from re import sub
 from decimal import Decimal, InvalidOperation
 import logging
@@ -29,7 +30,9 @@ from telegram.error import ChatMigrated
 from telegram.error import NetworkError
 from telegram.error import TimedOut
 from telegram.error import Unauthorized
+from locale import setlocale, LC_ALL
 
+setlocale(LC_ALL, "de_DE")
 config = configparser.ConfigParser()
 config.read('config/config.ini')
 engine = create_engine('sqlite:///config/bahn.sqlite')
@@ -54,7 +57,10 @@ def reqcons(connection):
     psc = inp[0].attrs["value"]
     d = {'lang': 'de', 'country': 'DEU', 'service': 'pscangebotsuche',
          "data": '{"s":"' + connection.start + '","d":"' + connection.dest + '","dt":"' + connection.date.strftime(
-             "%d.%m.%y") + '","t":"0:00","dur":1440,"pscexpires":"' + psc + '","dir":1,"sv":true,"ohneICE":false,"bic":false,"tct":"0","c":"2","travellers":[{"typ":"E","bc":"0","alter":""}]}'}
+             "%d.%m.%y") + '","t":"0:00","dur":1440,"pscexpires":"' + psc + '","dir":1,"sv":true,"ohneICE":false,'
+                                                                            '"bic":false,"tct":"0","c":"2",'
+                                                                            '"travellers":[{"typ":"E","bc":"0",'
+                                                                            '"alter":""}]}'}
     results = requests.get("https://ps.bahn.de/preissuche/preissuche/psc_service.go", params=d, allow_redirects=False)
     res = results.json()
     connections = dict()
@@ -71,13 +77,45 @@ def reqcons(connection):
         con = {"changes": len(res["verbindungen"][str(i)]["trains"]) - 1,
                "duration": timetomin(res["verbindungen"][str(i)]["dur"]), "price": price,
                "start_time": res["verbindungen"][str(i)]["trains"][0]["dep"]["t"],
-               "arrival_time": res["verbindungen"][str(i)]["trains"][-1]["dep"]["t"]}
+               "arrival_time": res["verbindungen"][str(i)]["trains"][-1]["arr"]["t"], "class": "2"}
         if con["changes"] <= connection.maxchanges and con["price"] <= connection.maxprice and con[
             "duration"] <= connection.maxduration:
             if con["price"] not in connections:
                 connections.update({con["price"]: [con]})
             else:
                 connections.update({con["price"]: connections[con["price"]] + [con]})
+
+    # the same for 1st class now
+
+    d = {'lang': 'de', 'country': 'DEU', 'service': 'pscangebotsuche',
+         "data": '{"s":"' + connection.start + '","d":"' + connection.dest + '","dt":"' + connection.date.strftime(
+             "%d.%m.%y") + '","t":"0:00","dur":1440,"pscexpires":"' + psc + '","dir":1,"sv":true,"ohneICE":false,'
+                                                                            '"bic":false,"tct":"0","c":"1",'
+                                                                            '"travellers":[{"typ":"E","bc":"0",'
+                                                                            '"alter":""}]}'}
+    results = requests.get("https://ps.bahn.de/preissuche/preissuche/psc_service.go", params=d, allow_redirects=False)
+    res = results.json()
+    if "error" in res:
+        return res["error"]["t"]
+    for i in range(len(res["verbindungen"])):
+        # get the price now
+        price = 0
+        for j in range(len(res["angebote"])):
+            if str(i) in res["angebote"][str(j)]["sids"]:
+                price = Decimal(res["angebote"][str(j)]["p"].replace(",", "."))
+                break
+        changes = len(res["verbindungen"][str(i)]["trains"]) - 1
+        con = {"changes": len(res["verbindungen"][str(i)]["trains"]) - 1,
+               "duration": timetomin(res["verbindungen"][str(i)]["dur"]), "price": price,
+               "start_time": res["verbindungen"][str(i)]["trains"][0]["dep"]["t"],
+               "arrival_time": res["verbindungen"][str(i)]["trains"][-1]["dep"]["t"], "class": "1"}
+        if con["changes"] <= connection.maxchanges and con["price"] <= connection.maxprice and con[
+            "duration"] <= connection.maxduration:
+            if con["price"] not in connections:
+                connections.update({con["price"]: [con]})
+            else:
+                connections.update({con["price"]: connections[con["price"]] + [con]})
+
     return connections
 
 
@@ -474,23 +512,37 @@ def RequestConnections(bot, update, usr, args):
                      "Diese Verbindung kann nicht gefunden werden. Vielleicht liegt sie in der Vergangenheit.",
                      InlineKeyboardMarkup(button_list))
     else:
+        if len(args) > 2:
+            conn.date = datetime.strptime(args[2], "%d.%m.%Y").date()
         # now get all the data
         entries = reqcons(conn)
         message = "Verbindungen von " + conn.start_name + " nach " + conn.dest_name + " am " + conn.date.strftime(
-            "%d.%m.%Y") + ":\n"
+            "%a, %d.%m.%Y") + ":\n"
         if type(entries) is str:
             message += entries
         elif not entries:
             message = "Keine Verbindungen unter diesen Kriterien gefunden."
         else:
             for key, entry in sorted(entries.items()):
-                message += "*" + str(key) + "€:*\n"
+                message += "*" + str(key) + "€ (" + entry[0]["class"] + ". Klasse)*:\n"
                 for ent in entry:
                     message += ent["start_time"] + " Uhr - " + ent["arrival_time"] + " Uhr (" + str(
                         ent["duration"] // 60) + "h" + format(ent["duration"] % 60, '02d') + "min), " + str(
                         ent["changes"]) + "x umsteigen\n"
         button_list = [[InlineKeyboardButton("🚄 Verbindung", callback_data="1$" + str(conn.id)),
-                        InlineKeyboardButton("🏠 Home", callback_data="0")]]
+                        InlineKeyboardButton("🏠 Home", callback_data="0")],
+                       [InlineKeyboardButton("◀️ vorheriger Tag", callback_data="9$" + str(conn.id) + "$" + (
+                       conn.date + timedelta(-1)).strftime(
+                           "%d.%m.%Y")),
+                        InlineKeyboardButton("nächster Tag ▶️", callback_data="9$" + str(conn.id) + "$" + (
+                        conn.date + timedelta(1)).strftime(
+                            "%d.%m.%Y"))],
+                       [InlineKeyboardButton("⏪ vorherige Woche", callback_data="9$" + str(conn.id) + "$" + (
+                       conn.date + timedelta(-7)).strftime(
+                           "%d.%m.%Y")),
+                        InlineKeyboardButton("nächste Woche ⏩", callback_data="9$" + str(conn.id) + "$" + (
+                        conn.date + timedelta(7)).strftime(
+                            "%d.%m.%Y"))]]
         send_or_edit(bot, update, message, InlineKeyboardMarkup(button_list))
     s.close()
 
