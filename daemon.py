@@ -524,11 +524,11 @@ def RequestConnections(bot, update, usr, args):
             message = "Keine Verbindungen unter diesen Kriterien gefunden."
         else:
             for key, entry in sorted(entries.items()):
-                message += "*" + str(key) + "€ (" + entry[0]["class"] + ". Klasse)*:\n"
+                message += "*" + str(key) + "€*:\n"
                 for ent in entry:
                     message += ent["start_time"] + " Uhr - " + ent["arrival_time"] + " Uhr (" + str(
                         ent["duration"] // 60) + "h" + format(ent["duration"] % 60, '02d') + "min), " + str(
-                        ent["changes"]) + "x umsteigen\n"
+                        ent["changes"]) + "x umsteigen, " + ent["class"] + ". Klasse\n"
         button_list = [[InlineKeyboardButton("🚄 Verbindung", callback_data="1$" + str(conn.id)),
                         InlineKeyboardButton("🏠 Home", callback_data="0")],
                        [InlineKeyboardButton("◀️ vorheriger Tag", callback_data="9$" + str(conn.id) + "$" + (
